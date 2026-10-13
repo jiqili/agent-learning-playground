@@ -1,0 +1,20 @@
+{
+	"name": "playground-backend",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "tsx watch app.ts",
+		"start": "tsx app.ts",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"dotenv": "^16.4.7",
+		"express": "^5.1.0"
+	},
+	"devDependencies": {
+		"@types/express": "^5.0.1",
+		"@types/node": "^22.13.10",
+		"tsx": "^4.19.3",
+		"typescript": "^5.8.2"
+	}
+}
