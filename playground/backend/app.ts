@@ -112,7 +112,13 @@ app.post("/v1/chat/completions", async (req: Request, res: Response) => {
 		}
 	} catch (error) {
 		if (controller.signal.aborted) return;
-		console.error("Model proxy request failed:", error instanceof Error ? error.message : "Unknown error");
+		const cause = error instanceof Error ? error.cause : undefined;
+		const causeCode = isRecord(cause) && typeof cause.code === "string" ? cause.code : undefined;
+		console.error(
+			"Model proxy request failed:",
+			error instanceof Error ? error.message : "Unknown error",
+			causeCode,
+		);
 		if (res.headersSent) {
 			res.end();
 		} else {
