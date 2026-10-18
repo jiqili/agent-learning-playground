@@ -1,0 +1,6 @@
+Search the web via DuckDuckGo. Returns titles, URLs and content: for up to the top three results, content is extracted from the page (up to 5,000 characters); other results, or pages that could not be fetched, retain the search snippet.
+Choose `category`:
+- text (default): facts, how-to, docs, products, people/companies, and LIVE DATA pages (weather, stock prices, exchange rates, schedules, scores). Use text whenever unsure.
+- news: only when the user asks what HAPPENED - events, announcements, incidents, recent developments. Never use news for live data such as weather.
+Write `query` as plain keywords in the user's language. Replace relative dates ('today', '今天') with the absolute date only when the date matters; do not pad queries with the year or words like 'latest'.
+Set `timelimit` only when results must be recently PUBLISHED (news defaults to 'w'). If results are off-topic, change the category or keywords instead of rephrasing the same query.
