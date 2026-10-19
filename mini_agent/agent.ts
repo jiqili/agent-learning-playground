@@ -1,3 +1,13 @@
+import { compactConversation } from "./compact/conversation-compaction.ts";
+import { compactLongMessages } from "./compact/message-compaction.ts";
+
+function countContextCharacters(messages: readonly AgentMessage[]): number {
+	return messages.reduce((total, message) =>
+		total + message.content.length
+		+ (message.role === "assistant" ? JSON.stringify(message.toolCalls ?? []).length : 0),
+	0);
+}
+
 export interface ToolCall {
 	id: string;
 	name: string;
@@ -67,53 +77,112 @@ export interface AgentLifecycle {
 		event: ToolCallContext,
 	) => void | { block: true; reason?: string } | Promise<void | { block: true; reason?: string }>;
 	afterToolCall?: (event: ToolCallOutcome) => void | Promise<void>;
-	onContextCompacted?: (event: { previousMessageCount: number; nextMessageCount: number }) => void | Promise<void>;
+	onContextCompactionStart?: (event: {
+		strategy: AgentCompactionOptions["strategy"];
+		previousMessageCount: number;
+		previousCharacters: number;
+	}) => void | Promise<void>;
+	onContextCompacted?: (event: {
+		previousMessageCount: number;
+		nextMessageCount: number;
+		previousCharacters: number;
+		nextCharacters: number;
+	}) => void | Promise<void>;
 }
 
-export function createConsoleLifecycle(): AgentLifecycle {
+export function createConsoleLifecycle(callbacks: AgentLifecycle = {}): AgentLifecycle {
 	return {
-		onAgentStart: () => console.info("[agent] started"),
-		onAgentEnd: ({ error }) => {
-			if (error) console.error("[agent] failed", error);
-			else console.info("[agent] finished");
+		...callbacks,
+		onAgentStart: () => {
+			console.info("[agent] started");
+			return callbacks.onAgentStart?.();
 		},
-		onTurnStart: ({ turn }) => console.info(`[agent] turn ${turn} started`),
-		beforeToolCall: ({ toolCall }) => console.info(`[agent] tool started: ${toolCall.name}`),
-		afterToolCall: ({ toolCall, result }) => {
-			if (result.isError) console.warn(`[agent] tool failed: ${toolCall.name}`);
-			else console.info(`[agent] tool finished: ${toolCall.name}`);
+		onAgentEnd: (event) => {
+			if (event.error) console.error("[agent] failed", event.error);
+			else console.info("[agent] finished");
+			return callbacks.onAgentEnd?.(event);
+		},
+		onTurnStart: (event) => {
+			console.info(`[agent] turn ${event.turn} started`);
+			return callbacks.onTurnStart?.(event);
+		},
+		onMessageEnd: (event) => {
+			if (event.message.role === "assistant") {
+				console.info("[agent] assistant message:", event.message.content);
+			}
+			return callbacks.onMessageEnd?.(event);
+		},
+		beforeToolCall: (event) => {
+			console.info(`[agent] tool started: ${event.toolCall.name}`, event.toolCall.arguments);
+			return callbacks.beforeToolCall?.(event);
+		},
+		afterToolCall: (event) => {
+			const { toolCall, result } = event;
+			const preview = result.content.length > 500
+				? `${result.content.slice(0, 500)}\n[preview truncated; ${result.content.length} characters total; full result retained in context]`
+				: result.content;
+			if (result.isError) console.warn(`[agent] tool failed: ${toolCall.name}`, preview);
+			else console.info(`[agent] tool finished: ${toolCall.name}`, preview);
+			return callbacks.afterToolCall?.(event);
+		},
+		onContextCompactionStart: (event) => {
+			console.info(
+				`[agent] compaction started (${event.strategy}): ${event.previousMessageCount} messages, ${event.previousCharacters} characters`,
+			);
+			return callbacks.onContextCompactionStart?.(event);
+		},
+		onContextCompacted: (event) => {
+			console.info(
+				`[agent] compaction finished: ${event.previousMessageCount} -> ${event.nextMessageCount} messages, ${event.previousCharacters} -> ${event.nextCharacters} characters`,
+			);
+			return callbacks.onContextCompacted?.(event);
 		},
 	};
 }
 
 export interface AgentOptions {
 	backendUrl?: string;
+	apiKey?: string;
+	model?: string;
 	tools?: AgentTool[];
 	initialMessages?: AgentMessage[];
 	systemPrompt?: string;
 	maxTurns?: number;
-	compactContext?: (
-		messages: readonly AgentMessage[],
-		signal: AbortSignal,
-	) => Promise<AgentMessage[] | undefined>;
+	compaction?: Partial<AgentCompactionOptions>;
 	lifecycle?: AgentLifecycle;
+}
+
+export interface AgentCompactionOptions {
+	strategy: "per-message" | "conversation";
+	messageThresholdCharacters: number;
+	conversationThresholdCharacters: number;
+	archiveDirectory: string;
 }
 
 export class Agent {
 	private transcript: AgentMessage[];
 	private readonly backendUrl: string;
+	private readonly apiKey?: string;
+	private readonly model?: string;
 	private readonly tools: AgentTool[];
 	private readonly maxTurns: number;
-	private readonly compactContext?: AgentOptions["compactContext"];
+	private readonly compaction: AgentCompactionOptions;
 	private readonly lifecycle: AgentLifecycle;
 	private activeController?: AbortController;
 
 	constructor(options: AgentOptions) {
 		this.backendUrl = (options.backendUrl ?? "http://127.0.0.1:3001").replace(/\/$/, "");
+		this.apiKey = options.apiKey;
+		this.model = options.model;
 		this.tools = options.tools?.slice() ?? [];
 		this.maxTurns = options.maxTurns ?? 12;
-		this.compactContext = options.compactContext;
-		this.lifecycle = { ...createConsoleLifecycle(), ...options.lifecycle };
+		this.compaction = {
+			strategy: options.compaction?.strategy ?? "conversation",
+			messageThresholdCharacters: options.compaction?.messageThresholdCharacters ?? 4_000,
+			conversationThresholdCharacters: options.compaction?.conversationThresholdCharacters ?? 20_000,
+			archiveDirectory: options.compaction?.archiveDirectory ?? ".agent-data/compaction",
+		};
+		this.lifecycle = createConsoleLifecycle(options.lifecycle);
 		this.transcript = options.initialMessages?.slice() ?? [];
 
 		if (options.systemPrompt && this.transcript[0]?.role !== "system") {
@@ -214,9 +283,13 @@ export class Agent {
 	private async requestModel(signal: AbortSignal): Promise<AssistantMessage> {
 		const response = await fetch(`${this.backendUrl}/v1/chat/completions`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers: {
+				"Content-Type": "application/json",
+				...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+			},
 			signal,
 			body: JSON.stringify({
+				...(this.model ? { model: this.model } : {}),
 				messages: this.transcript.map(toApiMessage),
 				tools: this.tools.map((tool) => ({
 					type: "function",
@@ -232,9 +305,12 @@ export class Agent {
 
 		const payload: unknown = await response.json();
 		if (!response.ok) {
-			const message = isRecord(payload) && isRecord(payload.error) && typeof payload.error.message === "string"
-				? payload.error.message
-				: `Backend request failed with status ${response.status}`;
+			const error = isRecord(payload) ? payload.error : undefined;
+			const message = typeof error === "string"
+				? error
+				: isRecord(error) && typeof error.message === "string"
+					? error.message
+					: `Backend request failed with status ${response.status}`;
 			throw new Error(message);
 		}
 		if (!isRecord(payload) || !Array.isArray(payload.choices)) {
@@ -261,16 +337,47 @@ export class Agent {
 	}
 
 	private async compactTranscript(signal: AbortSignal): Promise<void> {
-		if (!this.compactContext) return;
-
 		const previousMessageCount = this.transcript.length;
-		const compacted = await this.compactContext(this.messages, signal);
+		const previousCharacters = countContextCharacters(this.transcript);
+		const shouldCompact = this.compaction.strategy === "conversation"
+			? previousCharacters > this.compaction.conversationThresholdCharacters
+			: this.transcript.some((message) =>
+				message.role !== "system"
+				&& message.content.length > this.compaction.messageThresholdCharacters
+				&& !message.content.includes("[Full original archived at:"),
+			);
+		if (shouldCompact) {
+			await this.lifecycle.onContextCompactionStart?.({
+				strategy: this.compaction.strategy,
+				previousMessageCount,
+				previousCharacters,
+			});
+		}
+		const compacted = this.compaction.strategy === "conversation"
+			? shouldCompact
+				? await compactConversation(this.messages, {
+					backendUrl: this.backendUrl,
+					apiKey: this.apiKey,
+					model: this.model,
+					signal,
+				})
+				: undefined
+			: await compactLongMessages(this.messages, {
+				backendUrl: this.backendUrl,
+				apiKey: this.apiKey,
+				model: this.model,
+				signal,
+				archiveDirectory: this.compaction.archiveDirectory,
+				messageThresholdCharacters: this.compaction.messageThresholdCharacters,
+			});
 		if (!compacted) return;
 
 		this.transcript = compacted.slice();
 		await this.lifecycle.onContextCompacted?.({
 			previousMessageCount,
 			nextMessageCount: this.transcript.length,
+			previousCharacters,
+			nextCharacters: countContextCharacters(this.transcript),
 		});
 	}
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { callTool, ddgWebSearchTools, TOOL_SCHEMAS } from "./ddg_web_search.ts";
+import { callTool, ddgWebSearchTools, TOOL_SCHEMAS } from "../tools/ddg_web_search/ddg_web_search.ts";
 
 test("registers one English-described web search tool", () => {
 	assert.deepEqual(ddgWebSearchTools.map((tool) => tool.name), ["web_search"]);
