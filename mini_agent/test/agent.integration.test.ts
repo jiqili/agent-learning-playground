@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Agent } from "../agent.ts";
+import { connectMcpServer } from "../mcp/mcp.ts";
 import { readFileTool, writeFileTool, type FileReadResult } from "../tools/file/file.ts";
 
 const timeout = 180_000;
@@ -29,6 +30,48 @@ test("hi", { timeout }, async (t) => {
 
 	assert.ok(answer.content.trim().length > 0, "expected a non-empty response from the local backend");
 	assert.equal(answer.toolCalls?.length ?? 0, 0);
+});
+
+test("discovers an MCP tool and calls it through the model tool schema", { timeout }, async (t) => {
+	const connection = await connectMcpServer({
+		name: "fixture",
+		transport: "stdio",
+		command: process.execPath,
+		args: [
+			"--experimental-strip-types",
+			fileURLToPath(new URL("./fixtures/mcp-server.ts", import.meta.url)),
+		],
+		signal: t.signal,
+	});
+	t.after(() => connection.close());
+	const text = "mini-agent-mcp-integration";
+	const calls: string[] = [];
+	const agent = new Agent({
+		backendUrl,
+		apiKey,
+		model,
+		systemPrompt: "Call mcp__fixture__echo exactly once with the user's exact text. Then report the echoed text without calling any more tools.",
+		maxTurns: 3,
+		tools: connection.tools,
+		lifecycle: {
+			beforeToolCall: ({ toolCall }) => {
+				assert.equal(toolCall.name, "mcp__fixture__echo");
+				assert.deepEqual(toolCall.arguments, { text });
+				calls.push(toolCall.name);
+			},
+		},
+	});
+	t.signal.addEventListener("abort", () => agent.abort(), { once: true });
+
+	const answer = await agent.prompt(`Use the MCP echo tool to echo exactly ${JSON.stringify(text)}.`);
+
+	assert.deepEqual(calls, ["mcp__fixture__echo"]);
+	const results = agent.messages.filter((message) => message.role === "toolResult");
+	assert.equal(results.length, 1);
+	assert.equal(results[0]!.isError, false);
+	assert.deepEqual(JSON.parse(results[0]!.content).structuredContent, { echoed: text });
+	assert.equal(answer.toolCalls?.length ?? 0, 0);
+	assert.ok(answer.content.includes(text));
 });
 
 test("creates a txt file in the specified directory and writes a greeting", { timeout }, async (t) => {

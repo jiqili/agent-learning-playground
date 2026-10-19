@@ -3,7 +3,10 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"test": "node --experimental-strip-types --test test/agent.test.ts test/compaction.test.ts test/ddg_web_search.test.ts test/file.test.ts",
+		"test": "node --experimental-strip-types --test test/agent.test.ts test/compaction.test.ts test/ddg_web_search.test.ts test/file.test.ts test/mcp.test.ts",
 		"test:integration": "node --use-env-proxy --env-file=.env --experimental-strip-types --test test/agent.integration.test.ts"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.32.1"
 	}
 }
