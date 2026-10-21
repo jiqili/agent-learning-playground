@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+from urllib.request import getproxies
 
 try:
     from ddgs import DDGS
@@ -42,6 +44,18 @@ BOILERPLATE_MARKERS = (
 NAVIGATION_LINE = re.compile(r"^[\w\s\-&'.,]+(\s*[|.*>]+\s*[\w\s\-&'.,]+){2,}\s*$")
 
 
+def _client_options() -> dict[str, Any]:
+    proxies = getproxies()
+    proxy = os.environ.get("DDGS_PROXY") or proxies.get("https") or proxies.get("http") or proxies.get("all")
+    options: dict[str, Any] = {}
+    if proxy:
+        options["proxy"] = proxy
+    cert_file = os.environ.get("SSL_CERT_FILE")
+    if cert_file:
+        options["verify"] = cert_file
+    return options
+
+
 def web_search(
     query: str,
     category: str = "text",
@@ -74,7 +88,7 @@ def web_search(
         search_kwargs["timelimit"] = timelimit
 
     result_category = category
-    with DDGS(timeout=15) as ddgs:
+    with DDGS(timeout=15, **_client_options()) as ddgs:
         rows = getattr(ddgs, category)(query, **search_kwargs)
         if category == "news" and not rows:
             rows = ddgs.text(query, region=region, max_results=max_results)
@@ -111,7 +125,7 @@ def _fetch_top_pages(results: list[dict[str, Any]]) -> None:
 
 def _extract_page(url: str) -> str | None:
     try:
-        with DDGS(timeout=10) as ddgs:
+        with DDGS(timeout=10, **_client_options()) as ddgs:
             content = ddgs.extract(url, fmt="text_plain").get("content", "")
         if isinstance(content, bytes):
             content = content.decode("utf-8", "replace")
@@ -160,7 +174,7 @@ def main() -> int:
         print(f"DuckDuckGo search failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    print(json.dumps(result, ensure_ascii=False))
+    print(json.dumps(result, ensure_ascii=True))
     return 0
 
 

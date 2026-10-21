@@ -1,8 +1,11 @@
+import os
+import io
+import json
 import sys
 import unittest
 from unittest.mock import patch
 
-from tools.ddg_web_search import web_search
+from ddg_web_search import _client_options, main, web_search
 
 
 class FakeDDGS:
@@ -10,9 +13,11 @@ class FakeDDGS:
     news_rows = []
     pages = {}
     calls = []
+    clients = []
 
     def __init__(self, timeout=15, **kwargs):
         self.timeout = timeout
+        type(self).clients.append({"timeout": timeout, **kwargs})
 
     def __enter__(self):
         return self
@@ -42,9 +47,51 @@ class WebSearchTests(unittest.TestCase):
         FakeDDGS.news_rows = []
         FakeDDGS.pages = {}
         FakeDDGS.calls = []
-        self.ddgs_patch = patch("tools.ddg_web_search.DDGS", FakeDDGS)
+        FakeDDGS.clients = []
+        self.ddgs_patch = patch("ddg_web_search.DDGS", FakeDDGS)
         self.ddgs_patch.start()
         self.addCleanup(self.ddgs_patch.stop)
+
+    def test_client_options_prioritize_ddgs_proxy_and_forward_ca_file(self):
+        with patch.dict(os.environ, {"DDGS_PROXY": "http://dedicated:8080", "SSL_CERT_FILE": "trusted.pem"}, clear=True):
+            with patch("ddg_web_search.getproxies", return_value={"https": "http://standard:8080"}):
+                self.assertEqual(_client_options(), {"proxy": "http://dedicated:8080", "verify": "trusted.pem"})
+
+    def test_client_options_use_standard_proxy_precedence(self):
+        with patch.dict(os.environ, {}, clear=True):
+            for proxies, expected in [
+                ({"https": "https-proxy", "http": "http-proxy", "all": "all-proxy"}, "https-proxy"),
+                ({"http": "http-proxy", "all": "all-proxy"}, "http-proxy"),
+                ({"all": "all-proxy"}, "all-proxy"),
+            ]:
+                with self.subTest(proxies=proxies):
+                    with patch("ddg_web_search.getproxies", return_value=proxies):
+                        self.assertEqual(_client_options(), {"proxy": expected})
+            with patch("ddg_web_search.getproxies", return_value={}):
+                self.assertEqual(_client_options(), {})
+
+    def test_search_and_extraction_share_transport_options(self):
+        FakeDDGS.text_rows = [{"title": "Page", "href": "https://example.com", "body": "snippet"}]
+        with patch("ddg_web_search._client_options", return_value={"proxy": "http://proxy:8080", "verify": "trusted.pem"}):
+            web_search("example")
+        self.assertEqual(FakeDDGS.clients, [
+            {"timeout": 15, "proxy": "http://proxy:8080", "verify": "trusted.pem"},
+            {"timeout": 10, "proxy": "http://proxy:8080", "verify": "trusted.pem"},
+        ])
+
+    def test_main_outputs_unicode_results_with_legacy_windows_encoding(self):
+        results = [{"title": "高德地图 ⌘", "url": "https://example.com", "body": "中文结果"}]
+        output = io.BytesIO()
+        stdout = io.TextIOWrapper(output, encoding="cp1252")
+        with patch("ddg_web_search.web_search", return_value=results):
+            with patch.object(sys, "argv", ["ddg_web_search.py", '{"query":"example"}']):
+                with patch.object(sys, "stdout", stdout):
+                    self.assertEqual(main(), 0)
+                stdout.flush()
+        self.assertEqual(
+            json.loads(output.getvalue().decode("cp1252"))[0]["title"],
+            "高德地图 ⌘",
+        )
 
     def test_search_extracts_top_three_pages_and_preserves_snippets_on_failure(self):
         FakeDDGS.text_rows = [
