@@ -5,6 +5,8 @@ export interface CompactionOptions {
 	apiKey?: string;
 	model?: string;
 	signal: AbortSignal;
+	onRequest?: () => void;
+	onResponse?: (payload: unknown) => void;
 }
 
 export async function summarize(
@@ -13,6 +15,7 @@ export async function summarize(
 	userContent: string,
 ): Promise<string> {
 	const baseUrl = (options.backendUrl ?? DEFAULT_BACKEND_URL).replace(/\/$/, "");
+	options.onRequest?.();
 	const response = await fetch(`${baseUrl}/v1/chat/completions`, {
 		method: "POST",
 		headers: {
@@ -37,6 +40,7 @@ export async function summarize(
 		if (options.signal.aborted) throw options.signal.reason ?? error;
 		throw new Error("Compaction backend returned invalid JSON", { cause: error });
 	}
+	options.onResponse?.(payload);
 	if (!response.ok) {
 		const backendError = isRecord(payload) ? payload.error : undefined;
 		const detail = typeof backendError === "string"

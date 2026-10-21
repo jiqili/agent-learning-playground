@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { Agent, createConsoleLifecycle, type AgentMessage } from "../agent.ts";
+import { Agent, createConsoleLifecycle, type AgentMessage, type AgentUsage } from "../agent.ts";
 
 interface CapturedRequest {
 	url: string;
@@ -35,6 +35,76 @@ function mockBackend(responses: Record<string, unknown>[]) {
 function completion(message: Record<string, unknown>): Record<string, unknown> {
 	return { choices: [{ message }] };
 }
+
+test("reports per-task usage across tool turns and resets for subsequent prompts", async (t) => {
+	const backend = mockBackend([
+		{ ...completion({ content: null, tool_calls: [{ id: "one", function: { name: "read", arguments: "{}" } }] }), usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, cost: 0.001 } },
+		{ ...completion({ content: "Done" }), usage: { prompt_tokens: 200, completion_tokens: 20, total_tokens: 220, cost: 0.002 } },
+		{ ...completion({ content: "Again" }), usage: { prompt_tokens: 50, completion_tokens: 5, total_tokens: 55, cost: 0 } },
+	]);
+	t.after(backend.restore);
+	const events: AgentUsage[] = [];
+	const logs: string[] = [];
+	t.mock.method(console, "info", (...args: unknown[]) => { logs.push(args.join(" ")); });
+	const agent = new Agent({
+		tools: [{ name: "read", description: "Read", parameters: { type: "object" }, execute: async () => "ok" }],
+		lifecycle: { onAgentEnd: ({ usage }) => { events.push(usage); } },
+	});
+	await agent.prompt("First");
+	assert.deepEqual(agent.usage, { requests: 2, reportedRequests: 2, promptTokens: 300, completionTokens: 30, totalTokens: 330, costUsd: 0.003, costReportedRequests: 2 });
+	const snapshot = agent.usage;
+	snapshot.totalTokens = 999;
+	assert.equal(agent.usage.totalTokens, 330);
+	await agent.prompt("Second");
+	assert.equal(agent.usage.totalTokens, 55);
+	assert.equal(events[0]!.totalTokens, 330);
+	assert.ok(logs.some((line) => line.includes("total=330") && line.includes("$0.00300000 USD")));
+});
+
+test("includes compaction usage and explicitly labels missing cost and tokens", async (t) => {
+	const backend = mockBackend([
+		{ ...completion({ content: "Summary" }), usage: { prompt_tokens: 80, completion_tokens: 8, total_tokens: 88, cost: 0.001 } },
+		completion({ content: "Done" }),
+	]);
+	t.after(backend.restore);
+	const logs: string[] = [];
+	t.mock.method(console, "info", (...args: unknown[]) => { logs.push(args.join(" ")); });
+	const agent = new Agent({ compaction: { conversationThresholdCharacters: 10 } });
+	await agent.prompt("A long task forcing a compaction request");
+	assert.equal(agent.usage.requests, 2);
+	assert.equal(agent.usage.totalTokens, 88);
+	assert.equal(agent.usage.reportedRequests, 1);
+	assert.equal(agent.usage.costReportedRequests, 1);
+	assert.ok(logs.some((line) => line.includes("unknown/partial") && line.includes("1/2")));
+});
+
+test("failed tasks retain billed usage and mark failed network requests as unreported", async (t) => {
+	const backend = mockBackend([
+		{ ...completion({ content: null, tool_calls: [{ id: "one", function: { name: "read", arguments: "{}" } }] }), usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, cost: 0.001 } },
+	]);
+	t.after(backend.restore);
+	const agent = new Agent({ tools: [{ name: "read", description: "Read", parameters: {}, execute: async () => "ok" }] });
+	await assert.rejects(agent.prompt("First"), /No mock backend response left/);
+	assert.equal(agent.usage.requests, 2);
+	assert.equal(agent.usage.reportedRequests, 1);
+	assert.equal(agent.usage.costUsd, 0.001);
+});
+
+test("missing or invalid usage is not presented as fully reported zero usage", async (t) => {
+	const backend = mockBackend([
+		{ ...completion({ content: "Done" }), usage: { prompt_tokens: -1, completion_tokens: 2, total_tokens: 1, cost: -0.1 } },
+		{ ...completion({ content: "Again" }), usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } },
+	]);
+	t.after(backend.restore);
+	const agent = new Agent({});
+	await agent.prompt("First");
+	assert.equal(agent.usage.reportedRequests, 0);
+	assert.equal(agent.usage.costReportedRequests, 0);
+	await agent.prompt("Second");
+	assert.equal(agent.usage.reportedRequests, 1);
+	assert.equal(agent.usage.totalTokens, 12);
+	assert.equal(agent.usage.costReportedRequests, 0);
+});
 
 test("runs tool calls through the backend and emits lifecycle hooks", async () => {
 	const events: string[] = [];

@@ -1,5 +1,7 @@
 import { compactConversation } from "./compact/conversation-compaction.ts";
 import { compactLongMessages } from "./compact/message-compaction.ts";
+import { addUsage, emptyUsage, type AgentUsage } from "./usage.ts";
+export type { AgentUsage } from "./usage.ts";
 
 function countContextCharacters(messages: readonly AgentMessage[]): number {
 	return messages.reduce((total, message) =>
@@ -63,7 +65,7 @@ export interface ToolCallOutcome extends ToolCallContext {
 
 export interface AgentLifecycle {
 	onAgentStart?: () => void | Promise<void>;
-	onAgentEnd?: (event: { messages: readonly AgentMessage[]; error?: unknown }) => void | Promise<void>;
+	onAgentEnd?: (event: { messages: readonly AgentMessage[]; usage: AgentUsage; error?: unknown }) => void | Promise<void>;
 	onTurnStart?: (event: { turn: number }) => void | Promise<void>;
 	onTurnEnd?: (event: {
 		turn: number;
@@ -100,6 +102,14 @@ export function createConsoleLifecycle(callbacks: AgentLifecycle = {}): AgentLif
 		onAgentEnd: (event) => {
 			if (event.error) console.error("[agent] failed", event.error);
 			else console.info("[agent] finished");
+			const usage = event.usage;
+			const tokens = usage.requests === usage.reportedRequests
+				? `input=${usage.promptTokens}, output=${usage.completionTokens}, total=${usage.totalTokens}`
+				: `unknown/partial (reported ${usage.reportedRequests}/${usage.requests}; known total=${usage.totalTokens})`;
+			const cost = usage.costReportedRequests === usage.requests
+				? `$${usage.costUsd.toFixed(8)} USD`
+				: `unknown/partial (reported ${usage.costReportedRequests}/${usage.requests}; known=$${usage.costUsd.toFixed(8)} USD)`;
+			console.info(`[agent] usage: requests=${usage.requests}; tokens: ${tokens}; cost: ${cost}`);
 			return callbacks.onAgentEnd?.(event);
 		},
 		onTurnStart: (event) => {
@@ -169,6 +179,11 @@ export class Agent {
 	private readonly compaction: AgentCompactionOptions;
 	private readonly lifecycle: AgentLifecycle;
 	private activeController?: AbortController;
+	private runUsage: AgentUsage = emptyUsage();
+
+	get usage(): AgentUsage {
+		return { ...this.runUsage };
+	}
 
 	constructor(options: AgentOptions) {
 		this.backendUrl = (options.backendUrl ?? "http://127.0.0.1:3001").replace(/\/$/, "");
@@ -215,6 +230,7 @@ export class Agent {
 		if (this.isRunning) throw new Error("Agent is already running");
 
 		const controller = new AbortController();
+		this.runUsage = emptyUsage();
 		this.activeController = controller;
 		let runError: unknown;
 
@@ -236,7 +252,7 @@ export class Agent {
 			throw error;
 		} finally {
 			this.activeController = undefined;
-			await this.lifecycle.onAgentEnd?.({ messages: this.messages, error: runError });
+			await this.lifecycle.onAgentEnd?.({ messages: this.messages, usage: this.usage, error: runError });
 		}
 	}
 
@@ -281,6 +297,8 @@ export class Agent {
 	}
 
 	private async requestModel(signal: AbortSignal): Promise<AssistantMessage> {
+		const usage = this.runUsage;
+		usage.requests++;
 		const response = await fetch(`${this.backendUrl}/v1/chat/completions`, {
 			method: "POST",
 			headers: {
@@ -304,6 +322,7 @@ export class Agent {
 		});
 
 		const payload: unknown = await response.json();
+		addUsage(usage, payload);
 		if (!response.ok) {
 			const error = isRecord(payload) ? payload.error : undefined;
 			const message = typeof error === "string"
@@ -337,6 +356,7 @@ export class Agent {
 	}
 
 	private async compactTranscript(signal: AbortSignal): Promise<void> {
+		const usage = this.runUsage;
 		const previousMessageCount = this.transcript.length;
 		const previousCharacters = countContextCharacters(this.transcript);
 		const shouldCompact = this.compaction.strategy === "conversation"
@@ -360,6 +380,8 @@ export class Agent {
 					apiKey: this.apiKey,
 					model: this.model,
 					signal,
+					onRequest: () => { usage.requests++; },
+					onResponse: (payload) => { addUsage(usage, payload); },
 				})
 				: undefined
 			: await compactLongMessages(this.messages, {
@@ -367,6 +389,8 @@ export class Agent {
 				apiKey: this.apiKey,
 				model: this.model,
 				signal,
+				onRequest: () => { usage.requests++; },
+				onResponse: (payload) => { addUsage(usage, payload); },
 				archiveDirectory: this.compaction.archiveDirectory,
 				messageThresholdCharacters: this.compaction.messageThresholdCharacters,
 			});
