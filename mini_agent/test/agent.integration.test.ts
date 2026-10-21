@@ -74,6 +74,62 @@ test("discovers an MCP tool and calls it through the model tool schema", { timeo
 	assert.ok(answer.content.includes(text));
 });
 
+test("queries Amap weather through the remote MCP server", {
+	timeout,
+	skip: !process.env.GAODE_API_KEY?.trim() && "GAODE_API_KEY is not configured in mini_agent/.env",
+}, async (t) => {
+	const key = process.env.GAODE_API_KEY?.trim();
+	assert.ok(key, "GAODE_API_KEY must be configured in mini_agent/.env");
+	const url = new URL("https://mcp.amap.com/mcp");
+	url.searchParams.set("key", key);
+	const connection = await connectMcpServer({
+		name: "gaode",
+		transport: "http",
+		url,
+		signal: t.signal,
+	});
+	t.after(() => connection.close());
+	const weather = connection.tools.find((tool) => tool.name === "mcp__gaode__maps_weather");
+	assert.ok(weather, "Amap MCP must expose maps_weather");
+	const calls: string[] = [];
+	const agent = new Agent({
+		backendUrl,
+		apiKey,
+		model,
+		systemPrompt: "Call the weather tool exactly once with city set to 110000 (Beijing). Then summarize the returned weather in Chinese without calling any more tools. If the service returns an error, report it rather than inventing weather.",
+		maxTurns: 3,
+		tools: [weather],
+		lifecycle: {
+			beforeToolCall: ({ toolCall }) => {
+				assert.equal(toolCall.name, weather.name);
+				assert.equal(toolCall.arguments.city, "110000");
+				calls.push(toolCall.name);
+			},
+		},
+	});
+	t.signal.addEventListener("abort", () => agent.abort(), { once: true });
+
+	const answer = await agent.prompt("请调用高德天气工具，查询北京市（城市编码 110000）的天气并总结。");
+
+	assert.deepEqual(calls, [weather.name]);
+	const results = agent.messages.filter((message) => message.role === "toolResult");
+	assert.equal(results.length, 1);
+	assert.equal(results[0]!.isError, false, results[0]!.content);
+	const result: unknown = JSON.parse(results[0]!.content);
+	assert.ok(typeof result === "object" && result !== null && "content" in result);
+	assert.ok(Array.isArray(result.content) && result.content.length > 0);
+	const textBlock: unknown = result.content[0];
+	assert.ok(typeof textBlock === "object" && textBlock !== null && "text" in textBlock);
+	assert.equal("type" in textBlock && textBlock.type, "text");
+	assert.ok(typeof textBlock.text === "string");
+	const forecast: unknown = JSON.parse(textBlock.text);
+	assert.ok(typeof forecast === "object" && forecast !== null);
+	assert.equal("city" in forecast && forecast.city, "北京市");
+	assert.ok("forecasts" in forecast && Array.isArray(forecast.forecasts) && forecast.forecasts.length > 0);
+	assert.equal(answer.toolCalls?.length ?? 0, 0);
+	assert.ok(answer.content.trim().length > 0);
+});
+
 test("creates a txt file in the specified directory and writes a greeting", { timeout }, async (t) => {
 	const directory = await mkdtemp(path.join(tmpdir(), "mini-agent-file-integration-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
