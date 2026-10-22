@@ -3,6 +3,8 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
+		"setup:skill:ppt-master": "powershell -NoProfile -ExecutionPolicy Bypass -File install-ppt-master.ps1",
+		"prechat": "npm run setup:skill:ppt-master",
 		"chat": "node --use-env-proxy --env-file=.env --experimental-strip-types test/chat.ts",
 		"setup:mcp:github": "powershell -NoProfile -ExecutionPolicy Bypass -File mcp/install-github.ps1",
 		"mcp:github": "node --env-file=.env --experimental-strip-types mcp/github.ts",

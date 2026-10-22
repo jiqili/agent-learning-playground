@@ -149,3 +149,5 @@ vite.config.ts.timestamp-*
 .turbo
 /pi
 **/.agent-data/compaction/
+/mini_agent/skill/ppt-master/
+/mini_agent/skill/.ppt-master-download-*/

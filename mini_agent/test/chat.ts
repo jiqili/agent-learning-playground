@@ -6,6 +6,7 @@ import { githubMcpOptions } from "../mcp/github.ts";
 import { ddgWebSearchTools } from "../tools/ddg_web_search/ddg_web_search.ts";
 import { readFileTool, writeFileTool } from "../tools/file/file.ts";
 import { bashTool } from "../tools/bash/bash.ts";
+import { discoverSkills } from "../skills.ts";
 
 async function main(): Promise<void> {
 	const key = process.env.GAODE_API_KEY?.trim();
@@ -26,6 +27,8 @@ async function main(): Promise<void> {
 	};
 	process.on("SIGINT", stop);
 	try {
+		const skills = await discoverSkills();
+		console.info(`[skills] discovered ${skills.length}: ${skills.map((skill) => skill.name).join(", ")}`);
 		const tools = [readFileTool, writeFileTool, bashTool, ...ddgWebSearchTools];
 		if (key) {
 			const url = new URL("https://mcp.amap.com/mcp");
@@ -60,6 +63,7 @@ async function main(): Promise<void> {
 				apiKey,
 				model,
 				tools,
+				skills,
 				systemPrompt: "You are a helpful assistant with local file, web search, and optionally MCP tools. Reply in the user's language. Use the available tools as needed; do not invent tool results. Report service errors explicitly. Only write files when the user explicitly requests it.",
 			});
 			const question = process.argv.slice(2).join(" ").trim();
