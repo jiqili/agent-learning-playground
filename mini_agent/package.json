@@ -11,6 +11,8 @@
 		"test:mcp:github": "node --env-file=.env --experimental-strip-types test/github/github-mcp.smoke.ts",
 		"benchmark:github": "node --use-env-proxy --env-file=.env --experimental-strip-types test/github/github-token-benchmark.ts",
 		"test:github:bash": "node --use-env-proxy --env-file=.env --experimental-strip-types test/github/bash-discovery.ts",
+		"pretest:skills:ppt": "npm run setup:skill:ppt-master",
+		"test:skills:ppt": "node --use-env-proxy --env-file=.env --experimental-strip-types test/ppt-master.ts",
 		"test": "node --experimental-strip-types --test test/agent.test.ts test/compaction.test.ts test/ddg_web_search.test.ts test/file.test.ts test/bash.test.ts test/mcp.test.ts test/github/github-mcp.test.ts test/skills.test.ts",
 		"test:integration": "node --use-env-proxy --env-file=.env --experimental-strip-types --test test/agent.integration.test.ts"
 	},

@@ -66,7 +66,7 @@ The PPT skill is [PPT Master](skill/ppt-master/SKILL.md), version
 6.7.2, downloaded from [hugohe3/ppt-master](https://github.com/hugohe3/ppt-master)
 at pinned commit `604ecdec8dd6a0405e1abdb49565430902373276`.
 The complete `skill/ppt-master/` directory is a local cache ignored by Git,
-not vendored source. `npm run chat` automatically
+not vendored source. `npm run chat` and `npm run test:skills:ppt` automatically
 run [install-ppt-master.ps1](install-ppt-master.ps1) before skill discovery:
 an existing package is reused without network access; a missing package is
 downloaded with Git and its revision verified before installation.
@@ -92,6 +92,20 @@ dependencies only when needed. Upstream's editor/confirmation servers are not
 required when the user forbids them: tell the agent not to launch consoles,
 preview services, or listeners, and explicitly delegate design confirmation.
 Do not confuse SVG/browser previews with PowerPoint rendering.
+
+The manual real-model trial uses `OPENROUTER_MODEL` and `OPENROUTER_API_KEY`
+from `.env`, exposes only file and Bash tools, saves transcript/usage evidence,
+and checks that the model loaded the skill and produced a six-slide PPTX:
+
+```powershell
+npm run test:skills:ppt -- "C:\absolute\output-directory" "C:\absolute\source.json"
+```
+
+The source must be a JSON content pack with six `pages`, as in the preceding
+PPT comparison. This is a paid model run, separate from `npm test`; its prompt
+explicitly forbids starting the editing console or any server. Source
+material is sent to the configured provider, so use only authorized content.
+The generated deck needs visual inspection even when the checker passes.
 
 ## MCP tools
 
