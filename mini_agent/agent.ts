@@ -1,6 +1,7 @@
 import { compactConversation } from "./compact/conversation-compaction.ts";
 import { compactLongMessages } from "./compact/message-compaction.ts";
 import { addUsage, emptyUsage, type AgentUsage } from "./usage.ts";
+import { skillCatalogPrompt, type Skill } from "./skills.ts";
 export type { AgentUsage } from "./usage.ts";
 
 function countContextCharacters(messages: readonly AgentMessage[]): number {
@@ -155,6 +156,7 @@ export interface AgentOptions {
 	apiKey?: string;
 	model?: string;
 	tools?: AgentTool[];
+	skills?: readonly Skill[];
 	initialMessages?: AgentMessage[];
 	systemPrompt?: string;
 	maxTurns?: number;
@@ -206,6 +208,18 @@ export class Agent {
 				content: options.systemPrompt,
 				timestamp: Date.now(),
 			});
+		}
+		const catalog = skillCatalogPrompt(options.skills ?? []);
+		if (catalog) {
+			if (!this.tools.some((tool) => tool.name === "read_file")) {
+				throw new Error("Skills require the read_file tool for progressive loading");
+			}
+			const first = this.transcript[0];
+			if (first?.role === "system") {
+				this.transcript[0] = { ...first, content: `${first.content}\n\n${catalog}` };
+			} else {
+				this.transcript.unshift({ role: "system", content: catalog, timestamp: Date.now() });
+			}
 		}
 	}
 
@@ -396,7 +410,9 @@ export class Agent {
 			});
 		if (!compacted) return;
 
-		this.transcript = compacted.slice();
+		this.transcript = this.compaction.strategy === "conversation"
+			? [...this.transcript.filter((message) => message.role === "system"), ...compacted]
+			: compacted.slice();
 		await this.lifecycle.onContextCompacted?.({
 			previousMessageCount,
 			nextMessageCount: this.transcript.length,

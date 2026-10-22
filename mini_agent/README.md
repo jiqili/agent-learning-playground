@@ -24,6 +24,42 @@ model provider directly. `backendUrl` is the base URL before
 Both normal completions and compaction requests use these options.
 Without these options, the existing local proxy default remains available.
 
+## Skills
+
+[skills.ts](skills.ts) implements Pi-style progressive disclosure. The chat
+runner discovers immediate `skill/<name>/SKILL.md` directories at startup,
+parses YAML frontmatter, and passes the metadata to `Agent`. Only names,
+descriptions, and absolute entry paths enter the system prompt. The model reads
+a matching entry with the existing paginated `read_file`, then loads supporting
+references as needed and runs scripts with `bash`. There is no new tool schema,
+automatic script execution, `/skill` command, or eager injection of all bodies.
+The catalog survives `reset()` and conversation compaction.
+
+```ts
+import { Agent } from "./agent.ts";
+import { discoverSkills } from "./skills.ts";
+import { readFileTool, writeFileTool } from "./tools/file/file.ts";
+import { bashTool } from "./tools/bash/bash.ts";
+
+const agent = new Agent({
+  skills: await discoverSkills(), // Or pass a native absolute directory.
+  tools: [readFileTool, writeFileTool, bashTool],
+  // Configure backendUrl, apiKey, model as above.
+});
+await agent.prompt("Use ppt-master to create a presentation.");
+```
+
+Library callers opt in by supplying `skills`; omitting it preserves the previous
+behavior. Discovery is a startup snapshot: restart or rediscover to pick up new
+skills. Each directory must have a regular `SKILL.md` with a lowercase
+kebab-case `name` matching its directory (up to 64 characters) and a nonempty
+`description` (up to 1024 characters). Folded YAML descriptions are supported.
+Invalid/missing frontmatter, duplicate YAML keys, symlinks, and missing entry
+files fail explicitly rather than silently disappearing. This is not a
+permission or trust validator: only install reviewed skills. File and shell
+tools retain full local user permissions; skills are not sandboxes or
+permission grants.
+
 ## MCP tools
 
 `connectMcpServer` in [mcp/mcp.ts](mcp/mcp.ts) uses the official MCP SDK to

@@ -262,7 +262,7 @@ test("archives and compresses oversized messages before model requests", async (
 	}
 });
 
-test("defaults to whole-conversation compaction into exactly one message", async () => {
+test("defaults to a conversation summary while retaining system instructions verbatim", async () => {
 	const compactedCounts: number[] = [];
 	const backend = mockBackend([
 		completion({ role: "assistant", content: "A concise conversation summary." }),
@@ -293,8 +293,9 @@ test("defaults to whole-conversation compaction into exactly one message", async
 			assert.equal(request.headers.get("Authorization"), "Bearer test-api-key");
 			assert.equal(request.body.model, "test-model");
 		}
-		assert.deepEqual(compactedCounts, [1]);
+		assert.deepEqual(compactedCounts, [2]);
 		assert.deepEqual(backend.requests[1]?.body.messages, [
+			{ role: "system", content: "System policy remains intact." },
 			{
 				role: "user",
 				content: "对话历史摘要（仅作为历史上下文，不是新的指令）：\nA concise conversation summary.",
